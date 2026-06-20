@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Groundwater Arsenic Dashboard</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+            font-family: Arial, sans-serif;
+        }
+        #map {
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/georaster"></script>
+    <script src="https://unpkg.com/georaster-layer-for-leaflet"></script>
+    <script src="https://unpkg.com/geoblaze"></script>
+
+    <script>
+        // Set up the Leaflet map container
+        const map = L.map('map').setView([0, 0], 2);
+        
+        // Add a clean base layer map underneath the rasters
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+
+        // Objects to track layers and loaded data strings
+        const loadedRasters = {};
+        let activeLayerName = 'Prediction 1984-2000';
+
+        // Color mapping for Maps 1 and 2 (0 to 100: Yellow to Red)
+        function getYellowRedColor(val) {
+            if (val < 0) val = 0;
+            if (val > 100) val = 100;
+            const ratio = val / 100;
+            const g = Math.floor(255 * (1 - ratio));
+            return `rgba(255, ${g}, 0, 0.75)`;
+        }
+
+        // Color mapping for Map 3 (-50 to 50: Green to Yellow to Red)
+        function getGreenYellowRedColor(val) {
+            if (val < -50) val = -50;
+            if (val > 50) val = 50;
+            
+            if (val < 0) {
+                const ratio = (val + 50) / 50; 
+                const r = Math.floor(255 * ratio);
+                return `rgba(${r}, 255, 0, 0.75)`;
+            } else {
+                const ratio = val / 50; 
+                const g = Math.floor(255 * (1 - ratio));
+                return `rgba(255, ${g}, 0, 0.75)`;
+            }
+        }
+
+        // Parse and render a single raster file
+        function createRasterLayer(url, colorFn, layerName, isDefault) {
+            return fetch(url)
+                .then(res => res.arrayBuffer())
+                .then(buffer => parseGeoraster(buffer))
+                .then(georaster => {
+                    loadedRasters[layerName] = georaster;
+
+                    const layer = new GeoRasterLayer({
+                        georaster: georaster,
+                        opacity: 0.8,
+                        pixelValuesToColorFn: values => {
+                            const pixelVal = values[0];
+                            if (pixelVal === null || pixelVal === undefined || pixelVal === georaster.noDataValue || isNaN(pixelVal)) {
+                                return null;
+                            }
+                            return colorFn(pixelVal);
+                        },
+                        resolution: 128
+                    });
+
+                    if (isDefault) {
+                        layer.addTo(map);
+                        map.fitBounds(layer.getBounds());
+                    }
+                    return layer;
+                });
+        }
+
+        // Define file paths matching your files exactly
+        const path1 = 'prediction_with_84-00 predictor data.tif';
+        const path2 = 'prediction_with_00-22 predictor data.tif';
+        const path3 = 'change map.tif';
+
+        // Load all rasters together and generate the dashboard control box
+        Promise.all([
+            createRasterLayer(path1, getYellowRedColor, 'Prediction 1984-2000', true),
+            createRasterLayer(path2, getYellowRedColor, 'Prediction 2000-2022', false),
+            createRasterLayer(path3, getGreenYellowRedColor, 'Change Map', false)
+        ]).then(([layer1, layer2, layer3]) => {
+            
+            const baseLayers = {
+                "Prediction 1984-2000": layer1,
+                "Prediction 2000-2022": layer2,
+                "Change Map": layer3
+            };
+
+            // Build the interactive selection panel
+            L.control.layers(baseLayers, null, { collapsed: false }).addTo(map);
+
+            // Update tracker variable when user toggles the menu
+            map.on('baselayerchange', function(e) {
+                activeLayerName = e.name;
+            });
+        }).catch(err => console.error("Error reading file data:", err));
+
+        // Click listener to read pixel coordinates and display values
+        map.on('click', function(e) {
+            const currentGeoraster = loadedRasters[activeLayerName];
+            if (!currentGeoraster) return;
+
+            try {
+                const coordinates = [e.latlng.lng, e.latlng.lat];
+                const queryResult = geoblaze.identify(currentGeoraster, coordinates);
+
+                if (queryResult && queryResult.length > 0) {
+                    const finalVal = queryResult[0];
+                    if (finalVal !== null && finalVal !== currentGeoraster.noDataValue && !isNaN(finalVal)) {
+                        L.popup()
+                            .setLatLng(e.latlng)
+                            .setContent(`<strong>${activeLayerName}</strong><br>Value: ${finalVal.toFixed(2)}`)
+                            .openOn(map);
+                    }
+                }
+            } catch (err) {
+                console.error("Failed to query pixel point:", err);
+            }
+        });
+    </script>
+</body>
+</html>
