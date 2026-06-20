@@ -17,6 +17,21 @@
             width: 100%;
             height: 100%;
         }
+        .custom-control {
+            background: white;
+            padding: 12px;
+            border-radius: 5px;
+            box-shadow: 0 0 15px rgba(0,0,0,0.2);
+            font-size: 14px;
+            line-height: 22px;
+            color: #333;
+        }
+        .custom-control strong {
+            display: block;
+            margin-bottom: 6px;
+            border-bottom: 1px solid #ccc;
+            padding-bottom: 4px;
+        }
         .info.legend {
             background: white;
             padding: 10px;
@@ -46,16 +61,20 @@
 
     <script>
         // Set up the map container
-        const map = L.map('map').setView([0, 0], 2);
+        const map = L.map('map').setView([10.37, 105.75], 10);
         
         // Add English language base layer map
         L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
             attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
         }).addTo(map);
 
-        // Objects to store raster references
+        // Objects to store raster references and layer instances
         const loadedRasters = {};
+        const mapLayers = {};
         let activeLayerName = 'Prediction 1984-2000';
+
+        // Register common projections for data alignment
+        proj4.defs("EPSG:32648", "+proj=utm +zone=48 +datum=WGS84 +units=m +no_defs");
 
         // Set up the dynamic legend control
         const legend = L.control({ position: 'bottomright' });
@@ -133,6 +152,8 @@
                         resolution: 128
                     });
 
+                    mapLayers[layerName] = layer;
+
                     if (isDefault) {
                         layer.addTo(map);
                         map.fitBounds(layer.getBounds());
@@ -146,46 +167,105 @@
         const path2 = 'prediction_with_00-22 predictor data.tif';
         const path3 = 'change map.tif';
 
-        // Initialize layers
+        // Initialize layers and build custom control box
         Promise.all([
             createRasterLayer(path1, getYellowRedColor, 'Prediction 1984-2000', true),
             createRasterLayer(path2, getYellowRedColor, 'Prediction 2000-2022', false),
             createRasterLayer(path3, getGreenYellowRedColor, 'Change Map', false)
-        ]).then(([layer1, layer2, layer3]) => {
+        ]).then(() => {
             
-            // Empty layer group acts as the clear option
-            const dummyLayer = L.layerGroup();
-
-            const baseLayers = {
-                "Prediction 1984-2000": layer1,
-                "Prediction 2000-2022": layer2,
-                "Change Map": layer3,
-                "Base Map Only": dummyLayer
-            };
-
-            L.control.layers(baseLayers, null, { collapsed: false }).addTo(map);
-
-            // Force clear inactive layers and update legend
-            map.on('baselayerchange', function(e) {
-                activeLayerName = e.name;
-                legend.update(e.name);
+            // Create a custom UI control box to prevent canvas overlapping bugs
+            const customControl = L.control({ position: 'topright' });
+            customControl.onAdd = function() {
+                const div = L.DomUtil.create('div', 'custom-control');
+                div.innerHTML = `
+                    <strong>Layer Options</strong>
+                    <label><input type="radio" name="layer-toggle" value="Prediction 1984-2000" checked> Prediction 1984-2000</label><br>
+                    <label><input type="radio" name="layer-toggle" value="Prediction 2000-2022"> Prediction 2000-2022</label><br>
+                    <label><input type="radio" name="layer-toggle" value="Change Map"> Change Map</label><br>
+                    <label><input type="radio" name="layer-toggle" value="Base Map Only"> Base Map Only</label>
+                `;
                 
-                for (let name in baseLayers) {
-                    if (name !== e.name) {
-                        map.removeLayer(baseLayers[name]);
+                // Prevent map clicks from triggering when clicking inside the menu container
+                L.DomEvent.disableClickPropagation(div);
+                return div;
+            };
+            customControl.addTo(map);
+
+            // Listen for radio selection updates
+            document.addEventListener('change', function(event) {
+                if (event.target.name === 'layer-toggle') {
+                    const selectedName = event.target.value;
+                    activeLayerName = selectedName;
+                    legend.update(selectedName);
+
+                    // Remove all data layers explicitly
+                    for (let key in mapLayers) {
+                        if (map.hasLayer(mapLayers[key])) {
+                            map.removeLayer(mapLayers[key]);
+                        }
+                    }
+
+                    // Add only the requested data layer back to the container
+                    if (selectedName !== 'Base Map Only' && mapLayers[selectedName]) {
+                        mapLayers[selectedName].addTo(map);
                     }
                 }
             });
+
         }).catch(err => console.error("Error reading data files:", err));
 
-        // Click listener to sample all layers
+        // Coordinate space projection checker
+        function getNativeCoordinates(georaster, lng, lat) {
+            if (!georaster) return null;
+
+            // Test standard WGS84 mapping first
+            if (lng >= georaster.xmin && lng <= georaster.xmax && lat >= georaster.ymin && lat <= georaster.ymax) {
+                return [lng, lat];
+            }
+
+            // Test Web Mercator projection matching next
+            try {
+                const p3857 = proj4("EPSG:4326", "EPSG:3857", [lng, lat]);
+                if (p3857[0] >= georaster.xmin && p3857[0] <= georaster.xmax && p3857[1] >= georaster.ymin && p3857[1] <= georaster.ymax) {
+                    return p3857;
+                }
+            } catch (e) {}
+
+            // Test regional UTM Zone 48N grid system mapping
+            try {
+                const p32648 = proj4("EPSG:4326", "EPSG:32648", [lng, lat]);
+                if (p32648[0] >= georaster.xmin && p32648[0] <= georaster.xmax && p32648[1] >= georaster.ymin && p32648[1] <= georaster.ymax) {
+                    return p32648;
+                }
+            } catch (e) {}
+
+            // Check if native projection identifier matches known definitions
+            if (georaster.projection) {
+                try {
+                    const targetProj = typeof georaster.projection === 'number' ? "EPSG:" + georaster.projection : georaster.projection;
+                    const pCustom = proj4("EPSG:4326", targetProj, [lng, lat]);
+                    if (pCustom[0] >= georaster.xmin && pCustom[0] <= georaster.xmax && pCustom[1] >= georaster.ymin && pCustom[1] <= georaster.ymax) {
+                        return pCustom;
+                    }
+                } catch (e) {}
+            }
+
+            return null;
+        }
+
+        // Click listener to extract matched points from all profiles
         map.on('click', function(e) {
-            const coordinates = [e.latlng.lng, e.latlng.lat];
+            const lng = e.latlng.lng;
+            const lat = e.latlng.lat;
 
             function getPixelValue(raster) {
                 if (!raster) return "No Data";
                 try {
-                    const queryResult = geoblaze.identify(raster, coordinates);
+                    const nativeCoords = getNativeCoordinates(raster, lng, lat);
+                    if (!nativeCoords) return "No Data";
+
+                    const queryResult = geoblaze.identify(raster, nativeCoords);
                     if (queryResult && queryResult.length > 0) {
                         const finalVal = queryResult[0];
                         if (finalVal !== null && finalVal !== raster.noDataValue && !isNaN(finalVal)) {
@@ -193,7 +273,7 @@
                         }
                     }
                 } catch (err) {
-                    console.error("Error querying point:", err);
+                    console.error("Error querying location point:", err);
                 }
                 return "No Data";
             }
@@ -202,8 +282,8 @@
             const futureVal = getPixelValue(loadedRasters['Prediction 2000-2022']);
             const changeVal = getPixelValue(loadedRasters['Change Map']);
 
-            const latStr = e.latlng.lat.toFixed(5);
-            const lngStr = e.latlng.lng.toFixed(5);
+            const latStr = lat.toFixed(5);
+            const lngStr = lng.toFixed(5);
 
             const popupContent = `
                 <strong>Arsenic concentration</strong><br><br>
