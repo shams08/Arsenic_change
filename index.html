@@ -31,7 +31,6 @@
             height: 18px;
             float: left;
             margin-right: 8px;
-            opacity: 0.85;
         }
     </style>
 </head>
@@ -39,6 +38,7 @@
 
     <div id="map"></div>
 
+    <script src="https://unpkg.com/proj4"></script>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/georaster"></script>
     <script src="https://unpkg.com/georaster-layer-for-leaflet"></script>
@@ -48,9 +48,9 @@
         // Set up the map container
         const map = L.map('map').setView([0, 0], 2);
         
-        // Add base layer map
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '&copy; OpenStreetMap contributors'
+        // Add English language base layer map
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
         }).addTo(map);
 
         // Objects to store raster references
@@ -67,15 +67,20 @@
         };
 
         legend.update = function (layerName) {
+            if (layerName === 'Base Map Only') {
+                this._div.style.display = 'none';
+                return;
+            }
+            this._div.style.display = 'block';
             let html = `<strong>${layerName}</strong><br>`;
             if (layerName === 'Change Map') {
                 html += '<i style="background: rgb(0,255,0)"></i> -50 (Decrease)<br>';
                 html += '<i style="background: rgb(255,255,0)"></i> 0<br>';
                 html += '<i style="background: rgb(255,0,0)"></i> +50 (Increase)<br>';
             } else {
-                html += '<i style="background: rgb(255,255,0)"></i> 0 &mu;g/L<br>';
-                html += '<i style="background: rgb(255,128,0)"></i> 50 &mu;g/L<br>';
-                html += '<i style="background: rgb(255,0,0)"></i> 100 &mu;g/L<br>';
+                html += '<i style="background: rgb(255,255,0)"></i> 0 &#181;g/L<br>';
+                html += '<i style="background: rgb(255,128,0)"></i> 50 &#181;g/L<br>';
+                html += '<i style="background: rgb(255,0,0)"></i> 100 &#181;g/L<br>';
             }
             this._div.innerHTML = html;
         };
@@ -88,7 +93,7 @@
             if (val > 100) val = 100;
             const ratio = val / 100;
             const g = Math.floor(255 * (1 - ratio));
-            return `rgba(255, ${g}, 0, 0.75)`;
+            return `rgba(255, ${g}, 0, 1.0)`;
         }
 
         // Color mapping for Map 3 (-50 to 50: Green to Yellow to Red)
@@ -99,11 +104,11 @@
             if (val < 0) {
                 const ratio = (val + 50) / 50; 
                 const r = Math.floor(255 * ratio);
-                return `rgba(${r}, 255, 0, 0.75)`;
+                return `rgba(${r}, 255, 0, 1.0)`;
             } else {
                 const ratio = val / 50; 
                 const g = Math.floor(255 * (1 - ratio));
-                return `rgba(255, ${g}, 0, 0.75)`;
+                return `rgba(255, ${g}, 0, 1.0)`;
             }
         }
 
@@ -117,7 +122,7 @@
 
                     const layer = new GeoRasterLayer({
                         georaster: georaster,
-                        opacity: 0.8,
+                        opacity: 1.0,
                         pixelValuesToColorFn: values => {
                             const pixelVal = values[0];
                             if (pixelVal === null || pixelVal === undefined || pixelVal === georaster.noDataValue || isNaN(pixelVal)) {
@@ -148,25 +153,32 @@
             createRasterLayer(path3, getGreenYellowRedColor, 'Change Map', false)
         ]).then(([layer1, layer2, layer3]) => {
             
+            // Empty layer group acts as the clear option
+            const dummyLayer = L.layerGroup();
+
             const baseLayers = {
                 "Prediction 1984-2000": layer1,
                 "Prediction 2000-2022": layer2,
-                "Change Map": layer3
+                "Change Map": layer3,
+                "Base Map Only": dummyLayer
             };
 
             L.control.layers(baseLayers, null, { collapsed: false }).addTo(map);
 
-            // Handle layer changes, force canvas redraw, and update the legend panel
+            // Force clear inactive layers and update legend
             map.on('baselayerchange', function(e) {
                 activeLayerName = e.name;
                 legend.update(e.name);
-                if (e.layer && typeof e.layer.redraw === 'function') {
-                    e.layer.redraw();
+                
+                for (let name in baseLayers) {
+                    if (name !== e.name) {
+                        map.removeLayer(baseLayers[name]);
+                    }
                 }
             });
         }).catch(err => console.error("Error reading data files:", err));
 
-        // Click listener to sample all layers simultaneously
+        // Click listener to sample all layers
         map.on('click', function(e) {
             const coordinates = [e.latlng.lng, e.latlng.lat];
 
@@ -177,7 +189,7 @@
                     if (queryResult && queryResult.length > 0) {
                         const finalVal = queryResult[0];
                         if (finalVal !== null && finalVal !== raster.noDataValue && !isNaN(finalVal)) {
-                            return `${finalVal.toFixed(2)} &mu;g/L`;
+                            return `${finalVal.toFixed(2)} &#181;g/L`;
                         }
                     }
                 } catch (err) {
