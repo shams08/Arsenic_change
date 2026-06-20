@@ -17,6 +17,22 @@
             width: 100%;
             height: 100%;
         }
+        .info.legend {
+            background: white;
+            padding: 10px;
+            line-height: 20px;
+            color: #333;
+            border-radius: 5px;
+            box-shadow: 0 0 15px rgba(0,0,0,0.2);
+            font-size: 14px;
+        }
+        .legend i {
+            width: 18px;
+            height: 18px;
+            float: left;
+            margin-right: 8px;
+            opacity: 0.85;
+        }
     </style>
 </head>
 <body>
@@ -29,17 +45,42 @@
     <script src="https://unpkg.com/geoblaze"></script>
 
     <script>
-        // Set up the Leaflet map container
+        // Set up the map container
         const map = L.map('map').setView([0, 0], 2);
         
-        // Add a clean base layer map underneath the rasters
+        // Add base layer map
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '&copy; OpenStreetMap contributors'
         }).addTo(map);
 
-        // Objects to track layers and loaded data strings
+        // Objects to store raster references
         const loadedRasters = {};
         let activeLayerName = 'Prediction 1984-2000';
+
+        // Set up the dynamic legend control
+        const legend = L.control({ position: 'bottomright' });
+        
+        legend.onAdd = function () {
+            this._div = L.DomUtil.create('div', 'info legend');
+            this.update(activeLayerName);
+            return this._div;
+        };
+
+        legend.update = function (layerName) {
+            let html = `<strong>${layerName}</strong><br>`;
+            if (layerName === 'Change Map') {
+                html += '<i style="background: rgb(0,255,0)"></i> -50 (Decrease)<br>';
+                html += '<i style="background: rgb(255,255,0)"></i> 0<br>';
+                html += '<i style="background: rgb(255,0,0)"></i> +50 (Increase)<br>';
+            } else {
+                html += '<i style="background: rgb(255,255,0)"></i> 0 &mu;g/L<br>';
+                html += '<i style="background: rgb(255,128,0)"></i> 50 &mu;g/L<br>';
+                html += '<i style="background: rgb(255,0,0)"></i> 100 &mu;g/L<br>';
+            }
+            this._div.innerHTML = html;
+        };
+        
+        legend.addTo(map);
 
         // Color mapping for Maps 1 and 2 (0 to 100: Yellow to Red)
         function getYellowRedColor(val) {
@@ -66,7 +107,7 @@
             }
         }
 
-        // Parse and render a single raster file
+        // Parse and render raster files
         function createRasterLayer(url, colorFn, layerName, isDefault) {
             return fetch(url)
                 .then(res => res.arrayBuffer())
@@ -95,12 +136,12 @@
                 });
         }
 
-        // Define file paths matching your files exactly
+        // Define exact file paths
         const path1 = 'prediction_with_84-00 predictor data.tif';
         const path2 = 'prediction_with_00-22 predictor data.tif';
         const path3 = 'change map.tif';
 
-        // Load all rasters together and generate the dashboard control box
+        // Initialize layers
         Promise.all([
             createRasterLayer(path1, getYellowRedColor, 'Prediction 1984-2000', true),
             createRasterLayer(path2, getYellowRedColor, 'Prediction 2000-2022', false),
@@ -113,36 +154,58 @@
                 "Change Map": layer3
             };
 
-            // Build the interactive selection panel
             L.control.layers(baseLayers, null, { collapsed: false }).addTo(map);
 
-            // Update tracker variable when user toggles the menu
+            // Handle layer changes, force canvas redraw, and update the legend panel
             map.on('baselayerchange', function(e) {
                 activeLayerName = e.name;
-            });
-        }).catch(err => console.error("Error reading file data:", err));
-
-        // Click listener to read pixel coordinates and display values
-        map.on('click', function(e) {
-            const currentGeoraster = loadedRasters[activeLayerName];
-            if (!currentGeoraster) return;
-
-            try {
-                const coordinates = [e.latlng.lng, e.latlng.lat];
-                const queryResult = geoblaze.identify(currentGeoraster, coordinates);
-
-                if (queryResult && queryResult.length > 0) {
-                    const finalVal = queryResult[0];
-                    if (finalVal !== null && finalVal !== currentGeoraster.noDataValue && !isNaN(finalVal)) {
-                        L.popup()
-                            .setLatLng(e.latlng)
-                            .setContent(`<strong>${activeLayerName}</strong><br>Value: ${finalVal.toFixed(2)}`)
-                            .openOn(map);
-                    }
+                legend.update(e.name);
+                if (e.layer && typeof e.layer.redraw === 'function') {
+                    e.layer.redraw();
                 }
-            } catch (err) {
-                console.error("Failed to query pixel point:", err);
+            });
+        }).catch(err => console.error("Error reading data files:", err));
+
+        // Click listener to sample all layers simultaneously
+        map.on('click', function(e) {
+            const coordinates = [e.latlng.lng, e.latlng.lat];
+
+            function getPixelValue(raster) {
+                if (!raster) return "No Data";
+                try {
+                    const queryResult = geoblaze.identify(raster, coordinates);
+                    if (queryResult && queryResult.length > 0) {
+                        const finalVal = queryResult[0];
+                        if (finalVal !== null && finalVal !== raster.noDataValue && !isNaN(finalVal)) {
+                            return `${finalVal.toFixed(2)} &mu;g/L`;
+                        }
+                    }
+                } catch (err) {
+                    console.error("Error querying point:", err);
+                }
+                return "No Data";
             }
+
+            const currentVal = getPixelValue(loadedRasters['Prediction 1984-2000']);
+            const futureVal = getPixelValue(loadedRasters['Prediction 2000-2022']);
+            const changeVal = getPixelValue(loadedRasters['Change Map']);
+
+            const latStr = e.latlng.lat.toFixed(5);
+            const lngStr = e.latlng.lng.toFixed(5);
+
+            const popupContent = `
+                <strong>Arsenic concentration</strong><br><br>
+                Arsenic concentration (current) = ${currentVal}<br>
+                Arsenic concentration (future) = ${futureVal}<br>
+                Arsenic concentration change = ${changeVal}<br><br>
+                Latitude: ${latStr}<br>
+                Longitude: ${lngStr}
+            `;
+
+            L.popup()
+                .setLatLng(e.latlng)
+                .setContent(popupContent)
+                .openOn(map);
         });
     </script>
 </body>
