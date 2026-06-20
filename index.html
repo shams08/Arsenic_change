@@ -68,10 +68,9 @@
             attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
         }).addTo(map);
 
-        // Objects to store raster references and layer instances
+        // Objects to store raster references
         const loadedRasters = {};
-        const mapLayers = {};
-        let activeLayerName = 'Prediction 1984-2000';
+        let activeLayerName = 'Change Map';
 
         // Register common projections for data alignment
         proj4.defs("EPSG:32648", "+proj=utm +zone=48 +datum=WGS84 +units=m +no_defs");
@@ -92,28 +91,13 @@
             }
             this._div.style.display = 'block';
             let html = `<strong>${layerName}</strong><br>`;
-            if (layerName === 'Change Map') {
-                html += '<i style="background: rgb(0,255,0)"></i> -50 (Decrease)<br>';
-                html += '<i style="background: rgb(255,255,0)"></i> 0<br>';
-                html += '<i style="background: rgb(255,0,0)"></i> +50 (Increase)<br>';
-            } else {
-                html += '<i style="background: rgb(255,255,0)"></i> 0 &#181;g/L<br>';
-                html += '<i style="background: rgb(255,128,0)"></i> 50 &#181;g/L<br>';
-                html += '<i style="background: rgb(255,0,0)"></i> 100 &#181;g/L<br>';
-            }
+            html += '<i style="background: rgb(0,255,0)"></i> -50 (Decrease)<br>';
+            html += '<i style="background: rgb(255,255,0)"></i> 0<br>';
+            html += '<i style="background: rgb(255,0,0)"></i> +50 (Increase)<br>';
             this._div.innerHTML = html;
         };
         
         legend.addTo(map);
-
-        // Color mapping for Maps 1 and 2 (0 to 100: Yellow to Red)
-        function getYellowRedColor(val) {
-            if (val < 0) val = 0;
-            if (val > 100) val = 100;
-            const ratio = val / 100;
-            const g = Math.floor(255 * (1 - ratio));
-            return `rgba(255, ${g}, 0, 1.0)`;
-        }
 
         // Color mapping for Map 3 (-50 to 50: Green to Yellow to Red)
         function getGreenYellowRedColor(val) {
@@ -131,100 +115,82 @@
             }
         }
 
-        // Parse and render raster files
-        function createRasterLayer(url, colorFn, layerName, isDefault) {
-            return fetch(url)
-                .then(res => res.arrayBuffer())
-                .then(buffer => parseGeoraster(buffer))
-                .then(georaster => {
-                    loadedRasters[layerName] = georaster;
-
-                    const layer = new GeoRasterLayer({
-                        georaster: georaster,
-                        opacity: 1.0,
-                        pixelValuesToColorFn: values => {
-                            const pixelVal = values[0];
-                            if (pixelVal === null || pixelVal === undefined || pixelVal === georaster.noDataValue || isNaN(pixelVal)) {
-                                return null;
-                            }
-                            return colorFn(pixelVal);
-                        },
-                        resolution: 128
-                    });
-
-                    mapLayers[layerName] = layer;
-
-                    if (isDefault) {
-                        layer.addTo(map);
-                        map.fitBounds(layer.getBounds());
-                    }
-                    return layer;
-                });
-        }
-
         // Define exact file paths
         const path1 = 'prediction_with_84-00 predictor data.tif';
         const path2 = 'prediction_with_00-22 predictor data.tif';
         const path3 = 'change map.tif';
 
-        // Initialize layers and build custom control box
+        // Load all data records asynchronously
         Promise.all([
-            createRasterLayer(path1, getYellowRedColor, 'Prediction 1984-2000', true),
-            createRasterLayer(path2, getYellowRedColor, 'Prediction 2000-2022', false),
-            createRasterLayer(path3, getGreenYellowRedColor, 'Change Map', false)
-        ]).then(() => {
+            fetch(path1).then(res => res.arrayBuffer()).then(buf => parseGeoraster(buf)),
+            fetch(path2).then(res => res.arrayBuffer()).then(buf => parseGeoraster(buf)),
+            fetch(path3).then(res => res.arrayBuffer()).then(buf => parseGeoraster(buf))
+        ]).then(([geo1, geo2, geo3]) => {
             
-            // Create a custom UI control box to prevent canvas overlapping bugs
+            // Map data handles into storage cache for click lookups
+            loadedRasters['Prediction 1984-2000'] = geo1;
+            loadedRasters['Prediction 2000-2022'] = geo2;
+            loadedRasters['Change Map'] = geo3;
+
+            // Generate the map layer layer for the Change Map layout
+            const changeLayer = new GeoRasterLayer({
+                georaster: geo3,
+                opacity: 1.0,
+                pixelValuesToColorFn: values => {
+                    const pixelVal = values[0];
+                    if (pixelVal === null || pixelVal === undefined || pixelVal === geo3.noDataValue || isNaN(pixelVal)) {
+                        return null;
+                    }
+                    return getGreenYellowRedColor(pixelVal);
+                },
+                resolution: 128
+            });
+
+            // Display change layer and focus viewport boundaries
+            changeLayer.addTo(map);
+            map.fitBounds(changeLayer.getBounds());
+
+            // Build custom selection menu
             const customControl = L.control({ position: 'topright' });
             customControl.onAdd = function() {
                 const div = L.DomUtil.create('div', 'custom-control');
                 div.innerHTML = `
                     <strong>Layer Options</strong>
-                    <label><input type="radio" name="layer-toggle" value="Prediction 1984-2000" checked> Prediction 1984-2000</label><br>
-                    <label><input type="radio" name="layer-toggle" value="Prediction 2000-2022"> Prediction 2000-2022</label><br>
-                    <label><input type="radio" name="layer-toggle" value="Change Map"> Change Map</label><br>
+                    <label><input type="radio" name="layer-toggle" value="Change Map" checked> Change Map</label><br>
                     <label><input type="radio" name="layer-toggle" value="Base Map Only"> Base Map Only</label>
                 `;
-                
-                // Prevent map clicks from triggering when clicking inside the menu container
                 L.DomEvent.disableClickPropagation(div);
                 return div;
             };
             customControl.addTo(map);
 
-            // Listen for radio selection updates
+            // Setup interaction toggle framework
             document.addEventListener('change', function(event) {
                 if (event.target.name === 'layer-toggle') {
                     const selectedName = event.target.value;
                     activeLayerName = selectedName;
                     legend.update(selectedName);
 
-                    // Remove all data layers explicitly
-                    for (let key in mapLayers) {
-                        if (map.hasLayer(mapLayers[key])) {
-                            map.removeLayer(mapLayers[key]);
-                        }
+                    if (map.hasLayer(changeLayer)) {
+                        map.removeLayer(changeLayer);
                     }
 
-                    // Add only the requested data layer back to the container
-                    if (selectedName !== 'Base Map Only' && mapLayers[selectedName]) {
-                        mapLayers[selectedName].addTo(map);
+                    if (selectedName === 'Change Map') {
+                        changeLayer.addTo(map);
                     }
                 }
             });
 
-        }).catch(err => console.error("Error reading data files:", err));
+        }).catch(err => console.error("Error processing dataset assets:", err));
 
         // Coordinate space projection checker
         function getNativeCoordinates(georaster, lng, lat) {
             if (!georaster) return null;
 
-            // Test standard WGS84 mapping first
             if (lng >= georaster.xmin && lng <= georaster.xmax && lat >= georaster.ymin && lat <= georaster.ymax) {
                 return [lng, lat];
             }
 
-            // Test Web Mercator projection matching next
             try {
                 const p3857 = proj4("EPSG:4326", "EPSG:3857", [lng, lat]);
                 if (p3857[0] >= georaster.xmin && p3857[0] <= georaster.xmax && p3857[1] >= georaster.ymin && p3857[1] <= georaster.ymax) {
@@ -232,7 +198,6 @@
                 }
             } catch (e) {}
 
-            // Test regional UTM Zone 48N grid system mapping
             try {
                 const p32648 = proj4("EPSG:4326", "EPSG:32648", [lng, lat]);
                 if (p32648[0] >= georaster.xmin && p32648[0] <= georaster.xmax && p32648[1] >= georaster.ymin && p32648[1] <= georaster.ymax) {
@@ -240,7 +205,6 @@
                 }
             } catch (e) {}
 
-            // Check if native projection identifier matches known definitions
             if (georaster.projection) {
                 try {
                     const targetProj = typeof georaster.projection === 'number' ? "EPSG:" + georaster.projection : georaster.projection;
