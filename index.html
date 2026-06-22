@@ -68,6 +68,32 @@
             attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
         }).addTo(map);
 
+        // Geolocation trigger
+        map.locate({setView: false, watch: false});
+
+        // Handle successful location detection
+        map.on('locationfound', function(e) {
+            const radius = e.accuracy / 2;
+            
+            // Drop marker at user location
+            L.marker(e.latlng).addTo(map)
+                .bindPopup(`<strong>Your Location</strong><br>Accuracy: Within ${radius.toFixed(0)} meters`);
+            
+            // Draw accuracy radius circle
+            L.circle(e.latlng, {
+                radius: radius,
+                color: '#136aec',
+                fillColor: '#136aec',
+                fillOpacity: 0.15,
+                weight: 2
+            }).addTo(map);
+        });
+
+        // Log errors if user denies location tracking
+        map.on('locationerror', function(e) {
+            console.log("Location access unavailable: " + e.message);
+        });
+
         // Objects to store raster references
         const loadedRasters = {};
         let activeLayerName = 'Change Map';
